@@ -157,7 +157,36 @@ export const publishScheduledPost = inngest.createFunction(
                         images: post.images,
                         logger
                     });
-                }  
+                }
+                if(providerType === ChannelTypeEnum.INSTAGRAM){
+                    return publishToInstagram({
+                        accessToken: currentAccessToken,
+                        caption: post.content,
+                        igUserId: post.user_channels?.provider_account_id,
+                        images: post.images,
+                        handle: post.user_channels?.handle,
+                        logger
+                    });
+                }
+                if(providerType === ChannelTypeEnum.THREADS){
+                    return publishToThreads({
+                        accessToken: currentAccessToken,
+                        text: post.content,
+                        threadsUserId: post.user_channels?.provider_account_id,
+                        images: post.images,
+                        handle: post.user_channels?.handle,
+                        logger
+                    });
+                }
+                if(providerType === ChannelTypeEnum.FACEBOOK){
+                    return publishToFacebook({
+                        accessToken: currentAccessToken,
+                        message: post.content,
+                        pageId: post.user_channels?.provider_account_id,
+                        images: post.images,
+                        logger
+                    });
+                }
                 
                 throw new Error(`Unsupported provider type: ${providerType}`)
             })
@@ -424,6 +453,217 @@ async function uploadLinkedInImage({
   }
 
   return imageUrn as string
+}
+
+
+// ─── Instagram Publishing ───────────────────────────────────────
+async function publishToInstagram({
+  accessToken,
+  caption,
+  igUserId,
+  images,
+  handle,
+  logger,
+}: {
+  accessToken: string
+  caption: string
+  igUserId?: string | null
+  images?: ImageObject[]
+  handle?: string | null
+  logger: any
+}) {
+  if (!igUserId) throw new Error('Missing Instagram user ID')
+
+  const imageUrl = images?.[0]?.url
+
+  // Step 1: Create media container
+  const containerParams: Record<string, string> = {
+    caption,
+    access_token: accessToken,
+  }
+
+  if (imageUrl) {
+    containerParams.image_url = imageUrl
+    containerParams.media_type = 'IMAGE'
+  } else {
+    // Text-only posts are not supported by Instagram API.
+    // Instagram requires at least one image.
+    throw new Error('Instagram requires at least one image to publish a post.')
+  }
+
+  const containerRes = await fetch(
+    `https://graph.instagram.com/v21.0/${igUserId}/media`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(containerParams),
+    }
+  )
+  const containerData = await containerRes.json()
+  logger.info('Instagram container response', { containerData })
+
+  if (!containerRes.ok || !containerData?.id) {
+    throw new Error(
+      containerData?.error?.message || 'Failed to create Instagram media container'
+    )
+  }
+
+  const creationId = containerData.id
+
+  // Step 2: Wait a moment for the container to process
+  await new Promise((resolve) => setTimeout(resolve, 5000))
+
+  // Step 3: Publish the container
+  const publishRes = await fetch(
+    `https://graph.instagram.com/v21.0/${igUserId}/media_publish`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        creation_id: creationId,
+        access_token: accessToken,
+      }),
+    }
+  )
+  const publishData = await publishRes.json()
+  logger.info('Instagram publish response', { publishData })
+
+  if (!publishRes.ok || !publishData?.id) {
+    throw new Error(
+      publishData?.error?.message || 'Failed to publish Instagram post'
+    )
+  }
+
+  return handle
+    ? `https://www.instagram.com/${handle}/`
+    : `https://www.instagram.com/`
+}
+
+
+// ─── Threads Publishing ─────────────────────────────────────────
+async function publishToThreads({
+  accessToken,
+  text,
+  threadsUserId,
+  images,
+  handle,
+  logger,
+}: {
+  accessToken: string
+  text: string
+  threadsUserId?: string | null
+  images?: ImageObject[]
+  handle?: string | null
+  logger: any
+}) {
+  if (!threadsUserId) throw new Error('Missing Threads user ID')
+
+  const imageUrl = images?.[0]?.url
+
+  // Step 1: Create media container
+  const containerParams: Record<string, string> = {
+    text,
+    access_token: accessToken,
+    media_type: imageUrl ? 'IMAGE' : 'TEXT',
+  }
+
+  if (imageUrl) {
+    containerParams.image_url = imageUrl
+  }
+
+  const containerRes = await fetch(
+    `https://graph.threads.net/v1.0/${threadsUserId}/threads`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(containerParams),
+    }
+  )
+  const containerData = await containerRes.json()
+  logger.info('Threads container response', { containerData })
+
+  if (!containerRes.ok || !containerData?.id) {
+    throw new Error(
+      containerData?.error?.message || 'Failed to create Threads media container'
+    )
+  }
+
+  const creationId = containerData.id
+
+  // Step 2: Wait for processing
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+
+  // Step 3: Publish
+  const publishRes = await fetch(
+    `https://graph.threads.net/v1.0/${threadsUserId}/threads_publish`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        creation_id: creationId,
+        access_token: accessToken,
+      }),
+    }
+  )
+  const publishData = await publishRes.json()
+  logger.info('Threads publish response', { publishData })
+
+  if (!publishRes.ok || !publishData?.id) {
+    throw new Error(
+      publishData?.error?.message || 'Failed to publish Threads post'
+    )
+  }
+
+  return handle
+    ? `https://www.threads.net/@${handle}/`
+    : `https://www.threads.net/`
+}
+
+
+// ─── Facebook Page Publishing ───────────────────────────────────
+async function publishToFacebook({
+  accessToken,
+  message,
+  pageId,
+  images,
+  logger,
+}: {
+  accessToken: string
+  message: string
+  pageId?: string | null
+  images?: ImageObject[]
+  logger: any
+}) {
+  if (!pageId) throw new Error('Missing Facebook page ID')
+
+  const imageUrl = images?.[0]?.url
+  let endpoint = `https://graph.facebook.com/v17.0/${pageId}/feed`
+  const body: Record<string, string> = {
+    message,
+    access_token: accessToken,
+  }
+
+  if (imageUrl) {
+    endpoint = `https://graph.facebook.com/v17.0/${pageId}/photos`
+    body.url = imageUrl
+    body.caption = message
+  }
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await response.json()
+  logger.info('Facebook publish response', { data })
+
+  if (!response.ok || !data?.id) {
+    throw new Error(
+      data?.error?.message || 'Failed to publish Facebook post'
+    )
+  }
+
+  return `https://www.facebook.com/${data.id}`
 }
 
 
